@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>傅里叶变换三视图演示（自适应3D坐标）</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+  <style>
+    body { font-family: Arial; padding: 30px; }
+    .row { margin: 15px 0; font-size: 18px; }
+    .container { display: flex; flex-wrap: wrap; gap: 50px; align-items: flex-start; }
+    canvas { background: #fafafa; border: 1px solid #ccc; }
+    #freq3d { width: 900px; height: 600px; }
+    #amp2d, #phase2d { width: 600px; height: 250px; margin-top: 20px; }
+  </style>
+</head>
+
+<body>
+
+<h2>傅里叶变换三视图实时展示（自适应3D坐标）</h2>
+
+<div class="row">
+  信号类型：
+  <select id="signalType" style="font-size:18px;">
+    <option value="sine">正弦波</option>
+    <option value="rect">矩形脉冲</option>
+    <option value="exp">指数衰减</option>
+  </select>
+</div>
+
+<div class="row" id="freqRow">
+  正弦频率：
+  <input id="freqSlider" type="range" min="1" max="20" value="5" style="width:300px;">
+  <span id="freqValue">5 Hz</span>
+</div>
+
+<div class="row" id="rectRow" style="display:none;">
+  脉冲宽度 (秒)：
+  <input id="rectSlider" type="range" min="0.05" max="0.5" step="0.01" value="0.2" style="width:300px;">
+  <span id="rectValue">0.20 s</span>
+</div>
+
+<div class="row" id="expRow" style="display:none;">
+  衰减系数 a：
+  <input id="expSlider" type="range" min="0.5" max="10" step="0.1" value="2" style="width:300px;">
+  <span id="expValue">2.0</span>
+</div>
+
+<div class="row">
+  时移 τ（秒）：
+  <input id="shiftSlider" type="range" min="-1" max="1" step="0.01" value="0" style="width:300px;">
+  <span id="shiftValue">0.00 s</span>
+</div>
+
+<div class="row">
+  频移 f₀（Hz）：
+  <input id="fmSlider" type="range" min="0" max="20" step="0.5" value="0" style="width:300px;">
+  <span id="fmValue">0 Hz</span>
+</div>
+
+<div class="container">
+  <div>
+    <h4>时域信号</h4>
+    <canvas id="timeCanvas" width="600" height="280"></canvas>
+  </div>
+
+  <div>
+    <h4>频域复平面 (3D)</h4>
+    <div id="freq3d"></div>
+  </div>
+
+  <div>
+    <h4>频谱幅度 (2D)</h4>
+    <canvas id="amp2d"></canvas>
+  </div>
+
+  <div>
+    <h4>频谱相位 (2D)</h4>
+    <canvas id="phase2d"></canvas>
+  </div>
+</div>
+
+<script>
+const N = 256;
+const fs = 100;
+const t = Array.from({length:N},(_,i)=>i/fs);
+
+let signalType="sine", freq=5, rectWidth=0.2, a=2, tau=0, fm=0;
+
+// 控件事件
+document.getElementById("signalType").onchange=e=>{
+  signalType=e.target.value;
+  document.getElementById("freqRow").style.display=(signalType==="sine")?"block":"none";
+  document.getElementById("rectRow").style.display=(signalType==="rect")?"block":"none";
+  document.getElementById("expRow").style.display=(signalType==="exp")?"block":"none";
+};
+document.getElementById("freqSlider").oninput=e=>{freq=+e.target.value; document.getElementById("freqValue").textContent=freq+" Hz";}
+document.getElementById("rectSlider").oninput=e=>{rectWidth=+e.target.value; document.getElementById("rectValue").textContent=rectWidth.toFixed(2)+" s";}
+document.getElementById("expSlider").oninput=e=>{a=+e.target.value; document.getElementById("expValue").textContent=a.toFixed(1);}
+document.getElementById("shiftSlider").oninput=e=>{tau=+e.target.value; document.getElementById("shiftValue").textContent=tau.toFixed(2)+" s";}
+document.getElementById("fmSlider").oninput=e=>{fm=+e.target.value; document.getElementById("fmValue").textContent=fm+" Hz";}
+
+// 时域图
+const timeChart=new Chart(document.getElementById("timeCanvas"),{
+  type:'line',
+  data:{labels:t,datasets:[{data:[],borderWidth:1,pointRadius:0}]},
+  options:{animation:false,scales:{x:{display:false}}}
+});
+
+// 幅度图
+const ampChart=new Chart(document.getElementById("amp2d"),{
+  type:'line',
+  data:{labels:Array(N/2).fill(0), datasets:[{label:"|X|", data:[], borderWidth:1, borderColor:'blue', pointRadius:0}]},
+  options:{animation:false,scales:{x:{title:{display:true,text:'Frequency (Hz)'}},y:{title:{display:true,text:'Magnitude'}}}}
+});
+
+// 相位图
+const phaseChart=new Chart(document.getElementById("phase2d"),{
+  type:'line',
+  data:{labels:Array(N/2).fill(0), datasets:[{label:"∠X", data:[], borderWidth:1, borderColor:'red', pointRadius:0}]},
+  options:{animation:false,scales:{x:{title:{display:true,text:'Frequency (Hz)'}},y:{title:{display:true,text:'Phase (rad)'}}}}
+});
+
+// FFT
+function fftComplex(x){
+  const X=Array(N).fill(0).map(()=>({re:0,im:0}));
+  for(let k=0;k<N;k++){
+    for(let n=0;n<N;n++){
+      const angle=-2*Math.PI*k*n/N;
+      X[k].re+=x[n]*Math.cos(angle);
+      X[k].im+=x[n]*Math.sin(angle);
+    }
+  }
+  return X.slice(0,N/2);
+}
+
+// 3D图初始化
+const freq3dPlot = {
+  x:Array(N/2).fill(0).map((_,i)=>i*fs/N),
+  y:Array(N/2).fill(0),
+  z:Array(N/2).fill(0),
+  type:"scatter3d",
+  mode:"lines",
+  line:{width:4}
+};
+Plotly.newPlot("freq3d",[freq3dPlot],{
+  uirevision:"lock_axes",
+  scene:{
+    aspectmode:"manual", aspectratio:{x:1,y:1,z:1},
+    xaxis:{title:"Frequency (Hz)", range:[0,fs/2], autorange:false,fixedrange:true},
+    yaxis:{title:"Re", range:[-1,1], autorange:false,fixedrange:false},
+    zaxis:{title:"Im", range:[-1,1], autorange:false,fixedrange:false}
+  }
+});
+
+// 生成信号
+function generateSignal(){
+  if(signalType==="sine") return t.map(time=>Math.sin(2*Math.PI*freq*(time-tau))*Math.cos(2*Math.PI*fm*time));
+  if(signalType==="rect") return t.map(time=>((time-tau)>=0&&(time-tau)<=rectWidth?1:0)*Math.cos(2*Math.PI*fm*time));
+  if(signalType==="exp") return t.map(time=>((time>=tau)?Math.exp(-a*(time-tau)):0)*Math.cos(2*Math.PI*fm*time));
+}
+
+// 动画
+function animate(){
+  const signal=generateSignal();
+
+  // 时域
+  timeChart.data.datasets[0].data=signal;
+  timeChart.update();
+
+  const X=fftComplex(signal);
+  const freqs=X.map((_,i)=>i*fs/N);
+
+  // 3D 自适应坐标轴
+  const reVals=X.map(v=>v.re);
+  const imVals=X.map(v=>v.im);
+  const reMax=Math.max(...reVals.map(Math.abs))*1.2 || 1;
+  const imMax=Math.max(...imVals.map(Math.abs))*1.2 || 1;
+
+  Plotly.update("freq3d",{
+    x:[freqs],
+    y:[reVals],
+    z:[imVals]
+  },{
+    'scene.yaxis.range':[-reMax,reMax],
+    'scene.zaxis.range':[-imMax,imMax]
+  });
+
+  // 幅度
+  ampChart.data.labels=freqs;
+  ampChart.data.datasets[0].data=X.map(v=>Math.sqrt(v.re**2+v.im**2));
+  ampChart.update();
+
+  // 相位
+  phaseChart.data.labels=freqs;
+  phaseChart.data.datasets[0].data=X.map(v=>Math.atan2(v.im,v.re));
+  phaseChart.update();
+
+  requestAnimationFrame(animate);
+}
+
+animate();
+</script>
+
+</body>
+</html>
